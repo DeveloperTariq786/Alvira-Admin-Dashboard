@@ -3,21 +3,20 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
+import Layout from "./components/layout/DashboardLayout";
+import { getToken } from './services/loginService';
 import Products from "./pages/Products";
 import Categories from "./pages/Categories";
 import Orders from "./pages/Orders";
 import OrderDetailPage from "./pages/OrderDetailPage";
 import Customers from "./pages/Customers";
 import LoginPage from './pages/LoginPage';
-import { getToken, removeToken } from './services/loginService';
 import Promotions from "./pages/Promotions";
 import ColorAndSize from "./pages/ColorAndSize";
 import InstagramPage from "./pages/Instagram";
 import ImageManagementPage from "./pages/ImageManagementPage";
 import AbandonedCartsPage from "./pages/AbandonedCartsPage";
-import Layout from "./components/layout/DashboardLayout";
 import NotFound from "./pages/NotFound";
-import React from "react";
 
 const queryClient = new QueryClient();
 
