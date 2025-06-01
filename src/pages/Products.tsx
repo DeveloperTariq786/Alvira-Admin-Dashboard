@@ -650,7 +650,17 @@ const Products = () => {
               </div>
               <div>
                 <Label htmlFor="fabric">Fabric</Label>
-                <Input id="fabric" name="fabric" value={productFormData.fabric} onChange={handleFormInputChange} />
+                <Select name="fabric" value={productFormData.fabric} onValueChange={(value) => setProductFormData(prev => ({ ...prev, fabric: value }))}>
+                  <SelectTrigger id="fabric"><SelectValue placeholder="Select fabric" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Cotton">Cotton</SelectItem>
+                    <SelectItem value="Organza">Organza</SelectItem>
+                    <SelectItem value="Crepe">Crepe</SelectItem>
+                    <SelectItem value="Wool">Wool</SelectItem>
+                    <SelectItem value="Reyan">Reyan</SelectItem>
+                    <SelectItem value="Silk">Silk</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
               <div>
                 <Label htmlFor="categoryId">Category <span className="text-red-500">*</span></Label>
@@ -1048,7 +1058,17 @@ const Products = () => {
                   </div>
                   <div>
                     <Label htmlFor="edit-fabric">Fabric</Label>
-                    <Input id="edit-fabric" name="fabric" value={editFormData.fabric || ""} onChange={handleEditFormInputChange} placeholder="e.g. Cotton Silk" />
+                    <Select name="fabric" value={editFormData.fabric || ""} onValueChange={(value) => setEditFormData(prev => ({ ...prev, fabric: value }))}>
+                      <SelectTrigger id="edit-fabric"><SelectValue placeholder="Select fabric" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="Cotton">Cotton</SelectItem>
+                        <SelectItem value="Organza">Organza</SelectItem>
+                        <SelectItem value="Crepe">Crepe</SelectItem>
+                        <SelectItem value="Wool">Wool</SelectItem>
+                        <SelectItem value="Reyan">Reyan</SelectItem>
+                        <SelectItem value="Silk">Silk</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </div>
                   <div>
                     <Label htmlFor="edit-rating">Rating (0-5)</Label>
