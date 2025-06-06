@@ -2,7 +2,7 @@ import React, { useState, useEffect, FormEvent } from "react";
 import {
   Search, Filter, ChevronDown, PlusCircle, Eye, Edit, Trash2, ExternalLink,
   PackageCheck, Flame, Tag, Clock, Truck, ShieldCheck, Sparkles, Info, Plus, X,
-  Star
+  Star, RefreshCw
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from "@/components/ui/card";
@@ -60,7 +60,12 @@ import {
   ProductBenefit,
   ProductInformation,
   getProductReviews,
-  Review
+  Review,
+  StockStatus,
+  updateStockQuantity,
+  updateLowStockThreshold,
+  getLowStockProducts,
+  getOutOfStockProducts,
 } from "@/services/productService";
 import { getCategories, Category } from "@/services/categoryService";
 import { getColors, Color as ServiceColor } from "@/services/colorAndSizeService"; // Renamed to avoid conflict
@@ -74,6 +79,32 @@ const formatCurrency = (value: number, currencyCode: string = "INR") => {
     minimumFractionDigits: 0, // Typically whole numbers for INR in display
     maximumFractionDigits: 2,
   }).format(value);
+};
+
+// Helper function for stock status badge
+const getStockStatusBadge = (status: StockStatus, quantity: number, threshold: number) => {
+  let effectiveStatus: StockStatus = status;
+
+  if (quantity <= 0) {
+    effectiveStatus = "OUT_OF_STOCK";
+  } else if (threshold > 0 && quantity <= threshold) { // Ensure threshold is positive
+    effectiveStatus = "LOW_STOCK";
+  } else if (quantity > threshold) { // Explicitly set to IN_STOCK if above threshold
+    effectiveStatus = "IN_STOCK";
+  }
+  // Otherwise, respect the status from data if not overridden by quantity checks
+
+  switch (effectiveStatus) {
+    case "IN_STOCK":
+      return <Badge variant="default" className="bg-green-600 hover:bg-green-700 text-white capitalize">In Stock</Badge>;
+    case "LOW_STOCK":
+      return <Badge variant="default" className="bg-yellow-500 hover:bg-yellow-600 text-black capitalize">Low Stock</Badge>;
+    case "OUT_OF_STOCK":
+      return <Badge variant="destructive" className="capitalize">Sold Out</Badge>;
+    default:
+      // Fallback for any unexpected status values, displaying them as is
+      return <Badge variant="secondary" className="capitalize">{status ? status.replace(/_/g, ' ') : 'Unknown'}</Badge>;
+  }
 };
 
 const initialProductFormData: CreateProductData = {
@@ -95,7 +126,26 @@ const initialProductFormData: CreateProductData = {
   productInformation: { work: "", style: "", length: "", material: "", occasion: "", set_contents: "" },
   shippingPoints: [""],
   careInstructions: [""],
+  stockQuantity: 0, // Default stock quantity
+  lowStockThreshold: 5, // Default low stock threshold
+  stockStatus: "IN_STOCK", // Default stock status
 };
+
+// Define a list of common benefit icons (using Lucide icon names)
+const benefitIconOptions = [
+  { value: "truck", label: "Truck (Shipping)" },
+  { value: "shield-check", label: "Shield Check (Warranty)" },
+  { value: "tag", label: "Tag (Discount/Price)" },
+  { value: "package-check", label: "Package Check (Quality)" },
+  { value: "clock", label: "Clock (Time/Speed)" },
+  { value: "award", label: "Award (Quality/Best)" },
+  { value: "leaf", label: "Leaf (Eco-Friendly)" },
+  { value: "credit-card", label: "Credit Card (Payment)" },
+  { value: "rotate-ccw", label: "Rotate CCW (Returns)" },
+  { value: "thumbs-up", label: "Thumbs Up (Satisfaction)" },
+  { value: "zap", label: "Zap (Fast/Power)" },
+  { value: "gift", label: "Gift (Bonus)" },
+];
 
 const Products = () => {
   const [productsData, setProductsData] = useState<ProductsApiResponse | null>(null);
@@ -110,7 +160,8 @@ const Products = () => {
   // State for Edit Modal
   const [isEditModalOpen, setIsEditModalOpen] = useState<boolean>(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
-  const [editFormData, setEditFormData] = useState<UpdateProductData>({}); // Initialize with empty object or adapt initialProductFormData
+  const [editFormData, setEditFormData] = useState<UpdateProductData>({});
+  const [stockChangeReason, setStockChangeReason] = useState<string>(""); // New state for stock change reason
 
   // State for Delete Confirmation
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState<boolean>(false);
@@ -127,17 +178,27 @@ const Products = () => {
   const [allColors, setAllColors] = useState<ServiceColor[]>([]);
   const [allSizes, setAllSizes] = useState<ServiceSize[]>([]);
   const [categoryFilter, setCategoryFilter] = useState<string>("all"); // category ID or 'all'
+  const [activeFilter, setActiveFilter] = useState<'all' | 'low-stock' | 'out-of-stock'>('all'); // New filter state
 
   const { toast } = useToast();
 
-  const fetchProductData = async (page = 1, limit = 10) => {
+  const fetchProductData = async (page = 1, limit = 10, filter = activeFilter) => {
     setLoading(true);
+    setError(null);
     try {
-      const data = await getProducts(page, limit);
+      let data;
+      if (filter === 'low-stock') {
+        data = await getLowStockProducts(page, limit);
+      } else if (filter === 'out-of-stock') {
+        data = await getOutOfStockProducts(page, limit);
+      } else {
+        data = await getProducts(page, limit);
+      }
       setProductsData(data);
     } catch (err: any) {
       setError(err.message);
       toast({ title: "Error fetching products", description: err.message, variant: "destructive" });
+      setProductsData(null); // Clear data on error
     } finally {
       setLoading(false);
     }
@@ -159,9 +220,9 @@ const Products = () => {
   };
 
   useEffect(() => {
-    fetchProductData();
+    fetchProductData(1, 10, activeFilter); // Use activeFilter on initial load
     fetchInitialFormData();
-  }, []);
+  }, [activeFilter]); // Add activeFilter to dependency array to refetch when it changes
 
   const handleViewDetails = (product: Product) => {
     setSelectedProduct(product);
@@ -170,8 +231,6 @@ const Products = () => {
 
   const handleEditProduct = (product: Product) => {
     setEditingProduct(product);
-    // Pre-fill edit form data - ensure all fields from Product that are in UpdateProductData are mapped
-    // This needs to be comprehensive based on your UpdateProductData structure
     setEditFormData({
       name: product.name,
       price: product.price,
@@ -184,15 +243,19 @@ const Products = () => {
       isBest: product.isBest,
       isNew: product.isNew,
       description: product.description,
-      images: product.images.map(img => ({ imageUrl: img.imageUrl, isPrimary: img.isPrimary })), // Convert ProductImage to CreateProductImageDto
+      images: product.images.map(img => ({ imageUrl: img.imageUrl, isPrimary: img.isPrimary })),
       colors: product.colors.map(c => c.id),
       sizes: product.sizes.map(s => s.id),
-      productBenefits: product.productBenefits, // Assuming structure matches
-      productInformation: product.productInformation, // Assuming structure matches
+      productBenefits: product.productBenefits,
+      productInformation: product.productInformation,
       shippingPoints: product.shippingPoints,
       careInstructions: product.careInstructions,
-      rating: product.rating, // Add rating if it's part of UpdateProductData
+      rating: product.rating,
+      stockQuantity: product.stockQuantity,
+      lowStockThreshold: product.lowStockThreshold,
+      stockStatus: product.stockStatus,
     });
+    setStockChangeReason(""); // Reset reason on new edit
     setIsEditModalOpen(true);
   };
 
@@ -316,12 +379,62 @@ const Products = () => {
         return;
       }
       const newProduct = await addProduct(productFormData);
-      setProductsData(prev => prev ? { ...prev, products: [newProduct, ...prev.products], totalItems: prev.totalItems + 1 } : null);
+      // Toast for product creation will be shown first
       toast({ title: "Success!", description: `Product "${newProduct.name}" added successfully.` });
+
+      // Subsequent stock and threshold setup using specific APIs
+      // These will show their own toasts for success or failure
+      try {
+        // Check if stockQuantity is defined (it should be, as it's a number)
+        if (productFormData.stockQuantity !== undefined) {
+          await updateStockQuantity(newProduct.id, productFormData.stockQuantity, "Initial stock setup");
+          toast({ title: "Initial Stock Set", description: `Stock for ${newProduct.name} was set to ${productFormData.stockQuantity}.` });
+        }
+      } catch (stockErr: any) {
+        console.error("Error setting initial stock quantity for new product:", stockErr);
+        toast({ 
+          title: "Stock Setup Warning", 
+          description: `Product ${newProduct.name} was added, but failed to set initial stock quantity: ${stockErr.message}`, 
+          variant: "destructive",
+          duration: 7000 // Longer duration for warnings
+        });
+      }
+
+      try {
+        // Check if lowStockThreshold is defined
+        if (productFormData.lowStockThreshold !== undefined) {
+          await updateLowStockThreshold(newProduct.id, productFormData.lowStockThreshold);
+          toast({ title: "Low Stock Threshold Set", description: `Threshold for ${newProduct.name} was set to ${productFormData.lowStockThreshold}.` });
+        }
+      } catch (thresholdErr: any) {
+        console.error("Error setting initial low stock threshold for new product:", thresholdErr);
+        toast({ 
+          title: "Threshold Setup Warning", 
+          description: `Product ${newProduct.name} was added, but failed to set low stock threshold: ${thresholdErr.message}`, 
+          variant: "destructive",
+          duration: 7000 // Longer duration for warnings
+        });
+      }
+
+      // Update local state, close modal, and reset form after all operations are attempted
+      setProductsData(prev => {
+        if (!prev) return { products: [newProduct], page: 1, limit: 10, totalPages: 1, totalItems: 1 }; // Handle case where prev is null
+        // Add new product to the beginning of the list and update counts
+        const updatedProducts = [newProduct, ...prev.products]; 
+        // Ensure we don't exceed limit on current page view due to optimistic update, or simply refetch
+        // For simplicity, just adding and letting pagination handle it or assuming refetch after modal close if implemented
+        return { 
+          ...prev, 
+          products: updatedProducts, 
+          totalItems: prev.totalItems + 1 
+          // totalPages might need recalculation if not refetching
+        };
+      });
       setIsAddModalOpen(false);
-      setProductFormData(initialProductFormData); // Reset form
-    } catch (err: any) {
-      toast({ title: "Error adding product", description: err.message || "Could not add product.", variant: "destructive" });
+      setProductFormData(initialProductFormData); // Reset form for next use
+    } catch (err: any) { // This catches errors from the primary addProduct call
+      console.error("Error adding product:", err);
+      toast({ title: "Error Adding Product", description: err.message || "Could not add product. Please try again.", variant: "destructive" });
     } finally {
       setIsSubmittingProduct(false);
     }
@@ -417,32 +530,43 @@ const Products = () => {
     e.preventDefault();
     if (!editingProduct) return;
     setIsSubmittingProduct(true);
-    try {
-      // Basic validation (can be expanded)
-      if (!editFormData.name || !editFormData.price || !editFormData.categoryId ) {
-         toast({ title: "Validation Error", description: "Name, Price, and Category are required for update.", variant: "destructive" });
-         setIsSubmittingProduct(false);
-         return;
-      }
-      // Ensure images are in CreateProductImageDto format if they were changed
-      const updatePayload: UpdateProductData = {
-        ...editFormData,
-        images: editFormData.images?.map(img => ({ imageUrl: img.imageUrl, isPrimary: img.isPrimary }))
-      };
 
-      const updatedProd = await updateProduct(editingProduct.id, updatePayload);
-      setProductsData(prev => {
-        if (!prev) return null;
-        return {
-          ...prev,
-          products: prev.products.map(p => p.id === updatedProd.id ? updatedProd : p),
-        };
-      });
-      toast({ title: "Success!", description: `Product "${updatedProd.name}" updated successfully.` });
+    const originalStockQuantity = editingProduct.stockQuantity;
+    const originalLowStockThreshold = editingProduct.lowStockThreshold;
+
+    try {
+      // First, update the general product details (excluding stock/threshold if they have dedicated logic)
+      // Or, let updateProduct handle all, and then call specific stock APIs if needed for logging/specific triggers
+      // For now, let's assume updateProduct updates everything it's sent.
+      // We might need to separate the payload if the main PUT /products/:id shouldn't update stock/threshold directly.
+      
+      await updateProduct(editingProduct.id, editFormData);
+      toast({ title: "Product Updated", description: `${editFormData.name || editingProduct.name} has been updated.` });
+
+      let stockUpdated = false;
+      let thresholdUpdated = false;
+
+      // Check and update stock quantity if changed
+      if (editFormData.stockQuantity !== undefined && editFormData.stockQuantity !== originalStockQuantity) {
+        await updateStockQuantity(editingProduct.id, editFormData.stockQuantity, stockChangeReason);
+        toast({ title: "Stock Quantity Updated", description: `Stock for ${editingProduct.name} updated to ${editFormData.stockQuantity}.` });
+        stockUpdated = true;
+      }
+
+      // Check and update low stock threshold if changed
+      if (editFormData.lowStockThreshold !== undefined && editFormData.lowStockThreshold !== originalLowStockThreshold) {
+        await updateLowStockThreshold(editingProduct.id, editFormData.lowStockThreshold);
+        toast({ title: "Low Stock Threshold Updated", description: `Threshold for ${editingProduct.name} updated to ${editFormData.lowStockThreshold}.` });
+        thresholdUpdated = true;
+      }
+      
       setIsEditModalOpen(false);
       setEditingProduct(null);
+      fetchProductData(); // Refresh products list
+      setStockChangeReason(""); // Reset reason
     } catch (err: any) {
-      toast({ title: "Error updating product", description: err.message, variant: "destructive" });
+      console.error("Error updating product or stock:", err);
+      toast({ title: "Update Failed", description: err.message, variant: "destructive" });
     } finally {
       setIsSubmittingProduct(false);
     }
@@ -486,7 +610,11 @@ const Products = () => {
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Products</h1>
           <p className="text-muted-foreground">Manage your product catalog.</p>
         </div>
-        <div>
+        <div className="flex items-center space-x-2">
+          <Button variant="outline" onClick={() => fetchProductData(1, 10, activeFilter)} disabled={loading}>
+            <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+            Refresh
+          </Button>
           <Button onClick={() => setIsAddModalOpen(true)}>
             <PlusCircle className="h-4 w-4 mr-2" />
             Add Product
@@ -494,7 +622,7 @@ const Products = () => {
         </div>
       </div>
       
-      {/* Filters and Search - To be connected with API capabilities */}
+      {/* Filters and Search */}
       <Card>
         <CardContent className="p-4 md:p-6">
           <div className="flex flex-col md:flex-row gap-3 mb-6">
@@ -509,28 +637,26 @@ const Products = () => {
                 disabled // Disabled until API supports search
               />
             </div>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                <Button variant="outline" className="w-full md:w-auto">
-                  <Filter className="h-4 w-4 mr-2" />
-                  Category ({categoryFilter === 'all' ? 'All' : categories.find(c=>c.id === categoryFilter)?.name || 'Unknown'})
-                  <ChevronDown className="h-4 w-4 ml-2" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuLabel>Filter by Category</DropdownMenuLabel>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={() => setCategoryFilter("all")}>All Categories</DropdownMenuItem>
-                  {categories.map((category) => (
-                    <DropdownMenuItem 
-                    key={category.id} 
-                    onClick={() => setCategoryFilter(category.id)}
-                    >
-                    {category.name}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
+            <div className="flex space-x-2">
+              <Button 
+                variant={activeFilter === 'all' ? 'default' : 'outline'} 
+                onClick={() => setActiveFilter('all')}
+              >
+                All Products
+              </Button>
+              <Button 
+                variant={activeFilter === 'low-stock' ? 'default' : 'outline'} 
+                onClick={() => setActiveFilter('low-stock')}
+              >
+                Low Stock
+              </Button>
+              <Button 
+                variant={activeFilter === 'out-of-stock' ? 'default' : 'outline'} 
+                onClick={() => setActiveFilter('out-of-stock')}
+              >
+                Sold Out
+              </Button>
+            </div>
           </div>
           
           {/* Products Table */}
@@ -543,7 +669,9 @@ const Products = () => {
                   <TableHead>Name</TableHead>
                   <TableHead>Category</TableHead>
                   <TableHead>Price</TableHead>
-                  <TableHead>Status</TableHead>
+                  <TableHead>Tags</TableHead>
+                  <TableHead className="text-center">Stock Qty</TableHead>
+                  <TableHead>Stock Status</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
@@ -554,14 +682,14 @@ const Products = () => {
                       <TableCell>
                         <img 
                           src={getPrimaryImage(product.images) || '/placeholder.svg'} 
-                      alt={product.name}
+                          alt={product.name}
                           className="h-12 w-12 object-cover rounded-md bg-muted"
                           onError={(e) => (e.currentTarget.src = '/placeholder.svg')}
                         />
                       </TableCell>
-                      <TableCell className="font-medium">{product.name}</TableCell>
+                      <TableCell className="font-medium whitespace-nowrap">{product.name}</TableCell>
                       <TableCell>{product.category?.name || 'N/A'}</TableCell>
-                      <TableCell>
+                      <TableCell className="whitespace-nowrap">
                         {formatCurrency(product.price, product.currency)}
                         {product.originalPrice && product.originalPrice > product.price && (
                           <span className="ml-2 text-xs text-muted-foreground line-through">
@@ -571,7 +699,12 @@ const Products = () => {
                       </TableCell>
                       <TableCell>
                         {product.isNew && <Badge variant="outline" className="mr-1 border-green-500 text-green-600">New</Badge>}
-                        {product.isBest && <Badge variant="outline" className="border-blue-500 text-blue-600">Best</Badge>}
+                        {product.isBest && <Badge variant="outline" className="mr-1 border-blue-500 text-blue-600">Best</Badge>}
+                        {!product.isNew && !product.isBest && <span className="text-xs text-muted-foreground">-</span>}
+                      </TableCell>
+                      <TableCell className="text-center">{product.stockQuantity}</TableCell>
+                      <TableCell>
+                        {getStockStatusBadge(product.stockStatus, product.stockQuantity, product.lowStockThreshold)}
                       </TableCell>
                       <TableCell className="text-right">
                         <DropdownMenu>
@@ -606,7 +739,7 @@ const Products = () => {
                   ))
                 ) : (
                   <TableRow>
-                    <TableCell colSpan={6} className="text-center h-24">
+                    <TableCell colSpan={8} className="text-center h-24">
                       {loading ? 'Loading...' : 'No products found.'}
                     </TableCell>
                   </TableRow>
@@ -614,7 +747,34 @@ const Products = () => {
               </TableBody>
             </Table>
           </div>
-          {/* TODO: Pagination if productsData.totalPages > 1 */}
+          {/* Pagination Controls */}
+          {productsData && productsData.totalPages > 1 && (
+            <div className="flex items-center justify-between pt-4">
+              <div>
+                <p className="text-sm text-muted-foreground">
+                  Page {productsData.page} of {productsData.totalPages} (Total {productsData.totalItems} items)
+                </p>
+              </div>
+              <div className="flex space-x-2">
+                <Button 
+                  variant="outline" 
+                  size="sm"
+                  onClick={() => fetchProductData(productsData.page - 1, productsData.limit, activeFilter)}
+                  disabled={productsData.page <= 1 || loading}
+                >
+                  Previous
+                </Button>
+                <Button 
+                  variant="outline" 
+                  size="sm"
+                  onClick={() => fetchProductData(productsData.page + 1, productsData.limit, activeFilter)}
+                  disabled={productsData.page >= productsData.totalPages || loading}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -627,59 +787,94 @@ const Products = () => {
           </DialogHeader>
           <form onSubmit={handleAddProductSubmit} className="space-y-4 mt-4">
             {/* Basic Info */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <Label htmlFor="name">Product Name <span className="text-red-500">*</span></Label>
-                <Input id="name" name="name" value={productFormData.name} onChange={handleFormInputChange} required />
-              </div>
-              <div>
-                <Label htmlFor="price">Price (INR) <span className="text-red-500">*</span></Label>
-                <Input id="price" name="price" type="number" value={productFormData.price} onChange={handleFormInputChange} required step="0.01"/>
-              </div>
-               <div>
-                <Label htmlFor="originalPrice">Original Price (INR)</Label>
-                <Input id="originalPrice" name="originalPrice" type="number" value={productFormData.originalPrice || ''} onChange={handleFormInputChange} step="0.01"/>
-              </div>
-              <div>
-                <Label htmlFor="discount">Discount (%)</Label>
-                <Input id="discount" name="discount" type="number" value={productFormData.discount || ''} onChange={handleFormInputChange} step="0.01" />
-              </div>
-              <div>
-                <Label htmlFor="saleEndsIn">Sale Ends In (days)</Label>
-                <Input id="saleEndsIn" name="saleEndsIn" type="number" value={productFormData.saleEndsIn || ''} onChange={handleFormInputChange} />
-              </div>
-              <div>
-                <Label htmlFor="fabric">Fabric</Label>
-                <Select name="fabric" value={productFormData.fabric} onValueChange={(value) => setProductFormData(prev => ({ ...prev, fabric: value }))}>
-                  <SelectTrigger id="fabric"><SelectValue placeholder="Select fabric" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="Cotton">Cotton</SelectItem>
-                    <SelectItem value="Organza">Organza</SelectItem>
-                    <SelectItem value="Crepe">Crepe</SelectItem>
-                    <SelectItem value="Wool">Wool</SelectItem>
-                    <SelectItem value="Reyan">Reyan</SelectItem>
-                    <SelectItem value="Silk">Silk</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label htmlFor="categoryId">Category <span className="text-red-500">*</span></Label>
-                <Select name="categoryId" onValueChange={handleCategoryChange} value={productFormData.categoryId} required>
-                  <SelectTrigger><SelectValue placeholder="Select category" /></SelectTrigger>
-                  <SelectContent>
-                    {categories.map(cat => <SelectItem key={cat.id} value={cat.id}>{cat.name}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex items-center space-x-2">
-                <Checkbox id="isNew" name="isNew" checked={productFormData.isNew} onCheckedChange={(checked) => setProductFormData(prev => ({...prev, isNew: Boolean(checked)}))} />
-                <Label htmlFor="isNew">New Product</Label>
-              </div>
-              <div className="flex items-center space-x-2">
-                <Checkbox id="isBest" name="isBest" checked={productFormData.isBest} onCheckedChange={(checked) => setProductFormData(prev => ({...prev, isBest: Boolean(checked)}))} />
-                <Label htmlFor="isBest">Best Seller</Label>
-              </div>
-            </div>
+            <Card className="p-4">
+              <CardHeader><CardTitle className="text-lg">Basic Information</CardTitle></CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <Label htmlFor="name">Product Name <span className="text-red-500">*</span></Label>
+                    <Input id="name" name="name" value={productFormData.name} onChange={handleFormInputChange} required />
+                  </div>
+                  <div>
+                    <Label htmlFor="price">Price (INR) <span className="text-red-500">*</span></Label>
+                    <Input id="price" name="price" type="number" value={productFormData.price} onChange={handleFormInputChange} required step="0.01"/>
+                  </div>
+                  <div>
+                    <Label htmlFor="originalPrice">Original Price (INR)</Label>
+                    <Input id="originalPrice" name="originalPrice" type="number" value={productFormData.originalPrice || ''} onChange={handleFormInputChange} step="0.01"/>
+                  </div>
+                  <div>
+                    <Label htmlFor="discount">Discount (%)</Label>
+                    <Input id="discount" name="discount" type="number" value={productFormData.discount || ''} onChange={handleFormInputChange} step="0.01" />
+                  </div>
+                  <div>
+                    <Label htmlFor="saleEndsIn">Sale Ends In (days)</Label>
+                    <Input id="saleEndsIn" name="saleEndsIn" type="number" value={productFormData.saleEndsIn || ''} onChange={handleFormInputChange} />
+                  </div>
+                  <div>
+                    <Label htmlFor="fabric">Fabric</Label>
+                    <Select name="fabric" value={productFormData.fabric} onValueChange={(value) => setProductFormData(prev => ({ ...prev, fabric: value }))}>
+                      <SelectTrigger id="fabric"><SelectValue placeholder="Select fabric" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="Cotton">Cotton</SelectItem>
+                        <SelectItem value="Organza">Organza</SelectItem>
+                        <SelectItem value="Crepe">Crepe</SelectItem>
+                        <SelectItem value="Wool">Wool</SelectItem>
+                        <SelectItem value="Reyan">Reyan</SelectItem>
+                        <SelectItem value="Silk">Silk</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label htmlFor="categoryId">Category <span className="text-red-500">*</span></Label>
+                    <Select name="categoryId" onValueChange={handleCategoryChange} value={productFormData.categoryId} required>
+                      <SelectTrigger><SelectValue placeholder="Select category" /></SelectTrigger>
+                      <SelectContent>
+                        {categories.filter(cat => cat.id !== "").map(cat => <SelectItem key={cat.id} value={cat.id}>{cat.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="flex items-center space-x-2 pt-2">
+                    <Checkbox id="isNew" name="isNew" checked={productFormData.isNew} onCheckedChange={(checked) => setProductFormData(prev => ({...prev, isNew: Boolean(checked)}))} />
+                    <Label htmlFor="isNew" className="font-normal">New Product</Label>
+                  </div>
+                  <div className="flex items-center space-x-2 pt-2">
+                    <Checkbox id="isBest" name="isBest" checked={productFormData.isBest} onCheckedChange={(checked) => setProductFormData(prev => ({...prev, isBest: Boolean(checked)}))} />
+                    <Label htmlFor="isBest" className="font-normal">Best Seller</Label>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Stock Management Section - ADD PRODUCT */}
+            <Card className="p-4">
+              <CardHeader><CardTitle className="text-lg">Stock Management</CardTitle></CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <Label htmlFor="stockQuantity">Stock Quantity</Label>
+                    <Input id="stockQuantity" name="stockQuantity" type="number" value={productFormData.stockQuantity} onChange={handleFormInputChange} placeholder="e.g. 100" />
+                  </div>
+                  <div>
+                    <Label htmlFor="lowStockThreshold">Low Stock Threshold</Label>
+                    <Input id="lowStockThreshold" name="lowStockThreshold" type="number" value={productFormData.lowStockThreshold} onChange={handleFormInputChange} placeholder="e.g. 10" />
+                  </div>
+                  <div>
+                    <Label htmlFor="stockStatus">Initial Stock Status</Label>
+                    <Select name="stockStatus" value={productFormData.stockStatus} onValueChange={(value: StockStatus) => setProductFormData(prev => ({ ...prev, stockStatus: value }))}>
+                      <SelectTrigger id="stockStatus"><SelectValue placeholder="Select status" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="IN_STOCK">In Stock</SelectItem>
+                        <SelectItem value="LOW_STOCK">Low Stock</SelectItem>
+                        <SelectItem value="OUT_OF_STOCK">Out of Stock</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+            
+            {/* Description */}
             <div>
                 <Label htmlFor="description">Description</Label>
                 <Textarea id="description" name="description" value={productFormData.description} onChange={handleFormInputChange} />
@@ -787,12 +982,25 @@ const Products = () => {
                 <Label>Product Benefits</Label>
                 {productFormData.productBenefits.map((benefit, index) => (
                     <div key={index} className="flex items-center gap-2 p-2 border rounded-md">
-                        <Input 
-                            placeholder="Icon (e.g. 'clock')" 
-                            value={benefit.icon} 
-                            onChange={(e) => handleDynamicListChange('productBenefits', index, { ...benefit, icon: e.target.value }, 'icon')} 
-                            className="w-1/3"
-                        />
+                        <Select
+                          value={benefit.icon}
+                          onValueChange={(newIconValue) => {
+                            const finalIconValue = newIconValue === "@none@" ? "" : newIconValue;
+                            handleDynamicListChange('productBenefits', index, { ...benefit, icon: finalIconValue }, 'icon');
+                          }}
+                        >
+                          <SelectTrigger className="w-2/5">
+                            <SelectValue placeholder="Select icon" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="@none@">None</SelectItem>
+                            {benefitIconOptions.map(opt => (
+                              <SelectItem key={opt.value} value={opt.value}>
+                                {opt.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
                         <Input 
                             placeholder="Benefit text" 
                             value={benefit.text} 
@@ -901,8 +1109,14 @@ const Products = () => {
                     <p><strong className="font-medium">Category:</strong> {selectedProduct.category?.name || 'N/A'}</p>
                     <p><strong className="font-medium">Fabric:</strong> {selectedProduct.fabric || 'N/A'}</p>
                     <p><strong className="font-medium">Rating:</strong> {selectedProduct.rating} stars</p>
-                    {selectedProduct.isNew && <Badge variant="default" className="bg-green-500 hover:bg-green-600"><Sparkles className="h-3 w-3 mr-1"/> New Product</Badge>}
-                    {selectedProduct.isBest && <Badge variant="default" className="bg-blue-500 hover:bg-blue-600"><Flame className="h-3 w-3 mr-1"/> Best Seller</Badge>}
+                    
+                    {/* Inventory Details in Modal */}
+                    <div className="mt-2 space-y-1">
+                      <h4 className="font-medium text-sm text-muted-foreground">Inventory:</h4>
+                      <p className="text-sm"><strong className="font-medium">Stock Quantity:</strong> {selectedProduct.stockQuantity}</p>
+                      <p className="text-sm"><strong className="font-medium">Low Stock Threshold:</strong> {selectedProduct.lowStockThreshold}</p>
+                      <p className="text-sm"><strong className="font-medium">Status:</strong> {getStockStatusBadge(selectedProduct.stockStatus, selectedProduct.stockQuantity, selectedProduct.lowStockThreshold)}</p>
+                    </div>
 
                     <div className="mt-3 prose prose-sm max-w-none">
                         <h4 className="font-medium">Description:</h4>
@@ -995,25 +1209,15 @@ const Products = () => {
 
       {/* Edit Product Dialog */}
       {editingProduct && (
-        <Dialog open={isEditModalOpen} onOpenChange={(isOpen) => {
-          if (!isOpen) {
-            setEditingProduct(null); // Clear editing product when dialog is closed
-            setEditFormData({}); // Reset form
-          }
-          setIsEditModalOpen(isOpen);
-        }}>
-          <DialogContent className="sm:max-w-[600px] md:max-w-[800px] lg:max-w-[1000px] max-h-[90vh] overflow-y-auto">
+        <Dialog open={isEditModalOpen} onOpenChange={setIsEditModalOpen}>
+          <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
             <DialogHeader>
-              <DialogTitle>Edit Product: {editingProduct.name}</DialogTitle>
-              <DialogDescription>
-                Update the details of the product. Click save when you're done.
-              </DialogDescription>
+              <DialogTitle>Edit: {editingProduct.name}</DialogTitle>
+              <DialogDescription>Update the product details.</DialogDescription>
             </DialogHeader>
-            <form onSubmit={handleUpdateProductSubmit} className="space-y-4 py-4">
-              {/* Re-use or adapt form fields from Add Product Modal */}
-              {/* General Information Section */}
+            <form onSubmit={handleUpdateProductSubmit} className="space-y-6 mt-4">
               <Card>
-                <CardHeader><CardTitle>General Information</CardTitle></CardHeader>
+                <CardHeader><CardTitle className="text-lg">General Information</CardTitle></CardHeader>
                 <CardContent className="space-y-4">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
@@ -1022,14 +1226,13 @@ const Products = () => {
                     </div>
                     <div>
                       <Label htmlFor="edit-price">Price ({editFormData.currency || "INR"})</Label>
-                      <Input id="edit-price" name="price" type="number" value={editFormData.price || 0} onChange={handleEditFormInputChange} placeholder="e.g. 2999" />
+                      <Input id="edit-price" name="price" type="number" value={editFormData.price || 0} onChange={handleEditFormInputChange} placeholder="e.g. 2999" step="0.01" />
                     </div>
                   </div>
-                  {/* ... (include other fields like originalPrice, discount, saleEndsIn, currency - adapt from add product form) ... */}
-                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                         <Label htmlFor="edit-originalPrice">Original Price ({editFormData.currency || "INR"}) (Optional)</Label>
-                        <Input id="edit-originalPrice" name="originalPrice" type="number" value={editFormData.originalPrice || ""} onChange={handleEditFormInputChange} placeholder="e.g. 3999"/>
+                        <Input id="edit-originalPrice" name="originalPrice" type="number" value={editFormData.originalPrice || ""} onChange={handleEditFormInputChange} placeholder="e.g. 3999" step="0.01"/>
                     </div>
                     <div>
                         <Label htmlFor="edit-discount">Discount (%) (Optional)</Label>
@@ -1046,52 +1249,72 @@ const Products = () => {
                       <Input id="edit-currency" name="currency" value={editFormData.currency || "INR"} onChange={handleEditFormInputChange} placeholder="e.g. INR" />
                     </div>
                    </div>
-
                   <div>
                     <Label htmlFor="edit-categoryId">Category</Label>
                     <Select name="categoryId" value={editFormData.categoryId || ""} onValueChange={handleEditCategoryChange}>
                       <SelectTrigger id="edit-categoryId"><SelectValue placeholder="Select category" /></SelectTrigger>
                       <SelectContent>
-                        {categories.map(cat => <SelectItem key={cat.id} value={cat.id}>{cat.name}</SelectItem>)}
+                        {categories.filter(cat => cat.id !== "").map(cat => <SelectItem key={cat.id} value={cat.id}>{cat.name}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </div>
                   <div>
                     <Label htmlFor="edit-fabric">Fabric</Label>
-                    <Select name="fabric" value={editFormData.fabric || ""} onValueChange={(value) => setEditFormData(prev => ({ ...prev, fabric: value }))}>
-                      <SelectTrigger id="edit-fabric"><SelectValue placeholder="Select fabric" /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="Cotton">Cotton</SelectItem>
-                        <SelectItem value="Organza">Organza</SelectItem>
-                        <SelectItem value="Crepe">Crepe</SelectItem>
-                        <SelectItem value="Wool">Wool</SelectItem>
-                        <SelectItem value="Reyan">Reyan</SelectItem>
-                        <SelectItem value="Silk">Silk</SelectItem>
-                      </SelectContent>
+                     <Select name="fabric" value={editFormData.fabric || ""} onValueChange={(value) => setEditFormData(prev => ({ ...prev, fabric: value }))}>
+                        <SelectTrigger id="edit-fabric"><SelectValue placeholder="Select fabric" /></SelectTrigger>
+                        <SelectContent>
+                            <SelectItem value="Cotton">Cotton</SelectItem>
+                            <SelectItem value="Organza">Organza</SelectItem>
+                            <SelectItem value="Crepe">Crepe</SelectItem>
+                            <SelectItem value="Wool">Wool</SelectItem>
+                            <SelectItem value="Reyan">Reyan</SelectItem>
+                            <SelectItem value="Silk">Silk</SelectItem>
+                            {/* Consider fetching fabrics */}
+                        </SelectContent>
                     </Select>
                   </div>
-                  <div>
-                    <Label htmlFor="edit-rating">Rating (0-5)</Label>
-                    <Input id="edit-rating" name="rating" type="number" step="0.1" min="0" max="5" value={editFormData.rating || 0} onChange={handleEditFormInputChange} placeholder="e.g. 4.5" />
+                   <div className="flex items-center space-x-2">
+                    <Checkbox id="edit-isNew" name="isNew" checked={editFormData.isNew || false} onCheckedChange={(checked) => setEditFormData(prev => ({...prev, isNew: Boolean(checked)}))} />
+                    <Label htmlFor="edit-isNew" className="font-normal">New Product</Label>
                   </div>
                   <div className="flex items-center space-x-2">
-                    <Checkbox id="edit-isBest" name="isBest" checked={editFormData.isBest || false} onCheckedChange={(checked) => setEditFormData(prev => ({...prev, isBest: !!checked}))} />
-                    <Label htmlFor="edit-isBest">Best Seller</Label>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <Checkbox id="edit-isNew" name="isNew" checked={editFormData.isNew || false} onCheckedChange={(checked) => setEditFormData(prev => ({...prev, isNew: !!checked}))} />
-                    <Label htmlFor="edit-isNew">New Arrival</Label>
-                  </div>
-                  <div>
-                    <Label htmlFor="edit-description">Description</Label>
-                    <Textarea id="edit-description" name="description" value={editFormData.description || ""} onChange={handleEditFormInputChange} placeholder="Detailed product description..." />
+                    <Checkbox id="edit-isBest" name="isBest" checked={editFormData.isBest || false} onCheckedChange={(checked) => setEditFormData(prev => ({...prev, isBest: Boolean(checked)}))}/>
+                    <Label htmlFor="edit-isBest" className="font-normal">Best Seller</Label>
                   </div>
                 </CardContent>
               </Card>
 
-              {/* Images Section - Adapt from Add Product */}
+              {/* Stock Management Section - EDIT PRODUCT */}
               <Card>
-                <CardHeader><CardTitle>Product Images</CardTitle></CardHeader>
+                <CardHeader><CardTitle className="text-lg">Stock Management</CardTitle></CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div>
+                      <Label htmlFor="edit-stockQuantity">Stock Quantity</Label>
+                      <Input id="edit-stockQuantity" name="stockQuantity" type="number" value={editFormData.stockQuantity || 0} onChange={handleEditFormInputChange} placeholder="e.g. 100" />
+                    </div>
+                    <div>
+                      <Label htmlFor="edit-lowStockThreshold">Low Stock Threshold</Label>
+                      <Input id="edit-lowStockThreshold" name="lowStockThreshold" type="number" value={editFormData.lowStockThreshold || 0} onChange={handleEditFormInputChange} placeholder="e.g. 10" />
+                    </div>
+                    <div>
+                      <Label htmlFor="edit-stockStatus">Stock Status</Label>
+                      <Select name="stockStatus" value={editFormData.stockStatus || "IN_STOCK"} onValueChange={(value: StockStatus) => setEditFormData(prev => ({ ...prev, stockStatus: value as StockStatus }))}>
+                        <SelectTrigger id="edit-stockStatus"><SelectValue placeholder="Select status" /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="IN_STOCK">In Stock</SelectItem>
+                          <SelectItem value="LOW_STOCK">Low Stock</SelectItem>
+                          <SelectItem value="OUT_OF_STOCK">Out of Stock</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Images Section - EDIT PRODUCT */}
+              <Card>
+                <CardHeader><CardTitle className="text-lg">Product Images</CardTitle></CardHeader>
                 <CardContent className="space-y-4">
                   {(editFormData.images || []).map((img, index) => (
                     <div key={index} className="flex items-end gap-2 border p-2 rounded">
@@ -1101,7 +1324,7 @@ const Products = () => {
                       </div>
                       <div className="flex items-center space-x-2">
                         <Checkbox id={`edit-isPrimary-${index}`} checked={img.isPrimary} onCheckedChange={(checked) => handleEditImageChange(index, 'isPrimary', !!checked)} />
-                        <Label htmlFor={`edit-isPrimary-${index}`}>Primary</Label>
+                        <Label htmlFor={`edit-isPrimary-${index}`} className="font-normal">Primary</Label>
                       </div>
                       { (editFormData.images || []).length > 1 && <Button type="button" variant="ghost" size="icon" onClick={() => removeEditImageField(index)}><X className="h-4 w-4"/></Button> }
                     </div>
@@ -1110,9 +1333,9 @@ const Products = () => {
                 </CardContent>
               </Card>
               
-              {/* Colors & Sizes Section - Adapt from Add Product */}
+              {/* Colors & Sizes Section - EDIT PRODUCT */}
               <Card>
-                  <CardHeader><CardTitle>Colors & Sizes</CardTitle></CardHeader>
+                  <CardHeader><CardTitle className="text-lg">Colors & Sizes</CardTitle></CardHeader>
                   <CardContent className="space-y-4">
                       <div>
                           <Label>Available Colors</Label>
@@ -1128,12 +1351,13 @@ const Products = () => {
                                               handleEditMultiSelectChange('colors', newColors);
                                           }}
                                       />
-                                      <Label htmlFor={`edit-color-${color.id}`} className="flex items-center">
+                                      <Label htmlFor={`edit-color-${color.id}`} className="flex items-center font-normal">
                                         <span style={{backgroundColor: color.hexCode, width: '12px', height: '12px', borderRadius: '50%', marginRight: '8px', border: '1px solid #ccc' }}></span>
                                         {color.name}
                                       </Label>
                                   </div>
                               ))}
+                              {allColors.length === 0 && <p className="text-xs text-muted-foreground col-span-full">No colors available. Manage colors in settings.</p>}
                           </div>
                       </div>
                       <div>
@@ -1150,99 +1374,111 @@ const Products = () => {
                                               handleEditMultiSelectChange('sizes', newSizes);
                                           }}
                                       />
-                                      <Label htmlFor={`edit-size-${size.id}`}>{size.label}</Label>
+                                      <Label htmlFor={`edit-size-${size.id}`} className="font-normal">{size.label}</Label>
                                   </div>
                               ))}
+                              {allSizes.length === 0 && <p className="text-xs text-muted-foreground col-span-full">No sizes available. Manage sizes in settings.</p>}
                           </div>
                       </div>
                   </CardContent>
               </Card>
 
-              {/* Product Details Section (Benefits, Information, Shipping, Care) - Adapt from Add Product */}
-              {/* Example for Product Benefits */}
+              {/* Description Section - EDIT PRODUCT */}
               <Card>
-                <CardHeader><CardTitle>Product Benefits</CardTitle></CardHeader>
-                <CardContent className="space-y-4">
+                <CardHeader><CardTitle className="text-lg">Description</CardTitle></CardHeader>
+                <CardContent>
+                  <Label htmlFor="edit-description" className="sr-only">Description</Label>
+                  <Textarea id="edit-description" name="description" value={editFormData.description || ""} onChange={handleEditFormInputChange} placeholder="Detailed product description..." rows={5} />
+                </CardContent>
+              </Card>
+
+              {/* Product Benefits - EDIT PRODUCT */}
+              <Card>
+                <CardHeader><CardTitle className="text-lg">Product Benefits</CardTitle></CardHeader>
+                <CardContent className="space-y-3">
                   {(editFormData.productBenefits || []).map((benefit, index) => (
-                    <div key={index} className="grid grid-cols-1 md:grid-cols-2 gap-2 items-end border p-2 rounded">
-                      <div>
-                        <Label htmlFor={`edit-benefit-icon-${index}`}>Icon {index + 1}</Label>
-                        <Input id={`edit-benefit-icon-${index}`} value={benefit.icon} onChange={(e) => handleEditDynamicListChange('productBenefits', index, { ...benefit, icon: e.target.value }, 'icon')} placeholder="e.g. clock, shield-check"/>
-                      </div>
-                      <div>
-                        <Label htmlFor={`edit-benefit-text-${index}`}>Text {index + 1}</Label>
-                        <Input id={`edit-benefit-text-${index}`} value={benefit.text} onChange={(e) => handleEditDynamicListChange('productBenefits', index, { ...benefit, text: e.target.value }, 'text')} placeholder="e.g. Fast Delivery" />
-                      </div>
-                      { (editFormData.productBenefits || []).length > 1 && <Button type="button" variant="ghost" size="icon" onClick={() => removeEditDynamicListItem('productBenefits', index)}><X className="h-4 w-4"/></Button> }
+                    <div key={index} className="flex items-center gap-2 p-2 border rounded">
+                      <Input 
+                        value={benefit.icon} 
+                        onChange={(e) => handleEditDynamicListChange('productBenefits', index, e.target.value, 'icon')} 
+                        placeholder="Icon (e.g., truck)" 
+                        className="w-1/3"
+                      />
+                      <Input 
+                        value={benefit.text} 
+                        onChange={(e) => handleEditDynamicListChange('productBenefits', index, e.target.value, 'text')} 
+                        placeholder="Benefit text"
+                        className="flex-grow" 
+                      />
+                      <Button type="button" variant="ghost" size="icon" onClick={() => removeEditDynamicListItem('productBenefits', index)}><X className="h-4 w-4"/></Button>
                     </div>
                   ))}
-                  <Button type="button" variant="outline" size="sm" onClick={() => addEditDynamicListItem('productBenefits')}><Plus className="mr-2 h-4 w-4" /> Add Benefit</Button>
+                  <Button type="button" variant="outline" size="sm" onClick={() => addEditDynamicListItem('productBenefits')}><Plus className="mr-2 h-4 w-4"/>Add Benefit</Button>
+                </CardContent>
+              </Card>
+
+              {/* Product Information - EDIT PRODUCT */}
+              <Card>
+                <CardHeader><CardTitle className="text-lg">Product Information</CardTitle></CardHeader>
+                <CardContent className="space-y-3">
+                  {Object.entries(editFormData.productInformation || {}).map(([key, value]) => (
+                    <div key={key} className="flex items-center gap-2">
+                      <Input value={key.replace(/_/g, ' ')} disabled className="w-1/3 capitalize"/>
+                      <Input 
+                        value={value as string || ""} 
+                        onChange={(e) => handleEditProductInformationChange(key as keyof ProductInformation, e.target.value)} 
+                        placeholder={`Enter ${key.replace(/_/g, ' ')}`} 
+                      />
+                    </div>
+                  ))}
+                  {/* TODO: Allow adding new key-value pairs if necessary and supported by API */}
                 </CardContent>
               </Card>
               
-              {/* Product Information - adapt from add product form */}
-                <Card>
-                    <CardHeader><CardTitle>Product Information</CardTitle></CardHeader>
-                    <CardContent className="space-y-3">
-                        {Object.keys(initialProductFormData.productInformation).map((key) => (
-                            <div key={`edit-info-${key}`}>
-                                <Label htmlFor={`edit-info-${key}`}>{key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</Label>
-                                <Input 
-                                    id={`edit-info-${key}`} 
-                                    name={key} 
-                                    value={(editFormData.productInformation as any)?.[key] || ""} 
-                                    onChange={(e) => handleEditProductInformationChange(key as keyof ProductInformation, e.target.value)}
-                                    placeholder={`Enter ${key.replace(/_/g, ' ')}`}
-                                />
-                            </div>
-                        ))}
-                    </CardContent>
-                </Card>
+              {/* Shipping & Care - EDIT PRODUCT */}
+              <Card>
+                <CardHeader><CardTitle className="text-lg">Shipping & Care</CardTitle></CardHeader>
+                <CardContent className="space-y-4">
+                  <div>
+                    <Label>Shipping Points</Label>
+                    {(editFormData.shippingPoints || []).map((point, index) => (
+                      <div key={index} className="flex items-center gap-2 mt-1">
+                        <Input value={point} onChange={(e) => handleEditDynamicListChange('shippingPoints', index, e.target.value)} placeholder="e.g., Free shipping over $50"/>
+                        <Button type="button" variant="ghost" size="icon" onClick={() => removeEditDynamicListItem('shippingPoints', index)}><X className="h-4 w-4"/></Button>
+                      </div>
+                    ))}
+                    <Button type="button" variant="outline" size="sm" onClick={() => addEditDynamicListItem('shippingPoints')} className="mt-2"><Plus className="mr-2 h-4 w-4"/>Add Shipping Point</Button>
+                  </div>
+                  <div>
+                    <Label>Care Instructions</Label>
+                    {(editFormData.careInstructions || []).map((instruction, index) => (
+                      <div key={index} className="flex items-center gap-2 mt-1">
+                        <Input value={instruction} onChange={(e) => handleEditDynamicListChange('careInstructions', index, e.target.value)} placeholder="e.g., Machine wash cold"/>
+                        <Button type="button" variant="ghost" size="icon" onClick={() => removeEditDynamicListItem('careInstructions', index)}><X className="h-4 w-4"/></Button>
+                      </div>
+                    ))}
+                    <Button type="button" variant="outline" size="sm" onClick={() => addEditDynamicListItem('careInstructions')} className="mt-2"><Plus className="mr-2 h-4 w-4"/>Add Care Instruction</Button>
+                  </div>
+                </CardContent>
+              </Card>
 
-                {/* Shipping Points - adapt from add product form */}
-                <Card>
-                    <CardHeader><CardTitle>Shipping Points</CardTitle></CardHeader>
-                    <CardContent className="space-y-3">
-                        {(editFormData.shippingPoints || []).map((point, index) => (
-                            <div key={`edit-shipping-${index}`} className="flex items-center gap-2">
-                                <Input 
-                                    id={`edit-shipping-${index}`} 
-                                    value={point} 
-                                    onChange={(e) => handleEditDynamicListChange('shippingPoints', index, e.target.value)}
-                                    placeholder={`Shipping point ${index + 1}`}
-                                    className="flex-grow"
-                                />
-                                { (editFormData.shippingPoints || []).length > 1 && <Button type="button" variant="ghost" size="icon" onClick={() => removeEditDynamicListItem('shippingPoints', index)}><X className="h-4 w-4"/></Button> }
-                            </div>
-                        ))}
-                        <Button type="button" variant="outline" size="sm" onClick={() => addEditDynamicListItem('shippingPoints')}><Plus className="mr-2 h-4 w-4"/> Add Shipping Point</Button>
-                    </CardContent>
-                </Card>
+              {/* Add Stock Change Reason Field if stock quantity is potentially changing */}
+              {(editFormData.stockQuantity !== undefined && editingProduct && editFormData.stockQuantity !== editingProduct.stockQuantity) && (
+                 <div className="mt-4">
+                    <Label htmlFor="stockChangeReason">Reason for Stock Change (Optional)</Label>
+                    <Input
+                      id="stockChangeReason"
+                      type="text"
+                      value={stockChangeReason}
+                      onChange={(e) => setStockChangeReason(e.target.value)}
+                      placeholder="e.g., Manual restock, Inventory correction"
+                    />
+                  </div>
+              )}
 
-                {/* Care Instructions - adapt from add product form */}
-                <Card>
-                    <CardHeader><CardTitle>Care Instructions</CardTitle></CardHeader>
-                    <CardContent className="space-y-3">
-                        {(editFormData.careInstructions || []).map((instruction, index) => (
-                            <div key={`edit-care-${index}`} className="flex items-center gap-2">
-                                <Input 
-                                    id={`edit-care-${index}`} 
-                                    value={instruction} 
-                                    onChange={(e) => handleEditDynamicListChange('careInstructions', index, e.target.value)}
-                                    placeholder={`Care instruction ${index + 1}`}
-                                    className="flex-grow"
-                                />
-                                { (editFormData.careInstructions || []).length > 1 && <Button type="button" variant="ghost" size="icon" onClick={() => removeEditDynamicListItem('careInstructions', index)}><X className="h-4 w-4"/></Button> }
-                            </div>
-                        ))}
-                        <Button type="button" variant="outline" size="sm" onClick={() => addEditDynamicListItem('careInstructions')}><Plus className="mr-2 h-4 w-4"/> Add Care Instruction</Button>
-                    </CardContent>
-                </Card>
-
-
-              <DialogFooter className="pt-4">
+              <DialogFooter>
                 <DialogClose asChild>
-                  <Button type="button" variant="outline">Cancel</Button>
+                  <Button variant="outline">Cancel</Button>
                 </DialogClose>
                 <Button type="submit" disabled={isSubmittingProduct}>
                   {isSubmittingProduct ? <LoadingSpinner className="mr-2 h-4 w-4 animate-spin" /> : null}

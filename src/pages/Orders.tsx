@@ -46,13 +46,16 @@ const Orders = () => {
   const navigate = useNavigate();
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [currentPage, setCurrentPage] = useState(1);
+  const [limit, setLimit] = useState(10);
 
   const { data, isLoading, error, refetch } = useQuery<OrdersApiResponse, Error>({
-    queryKey: ["orders", { page: 1, limit: 10, search: searchTerm, status: statusFilter === "all" ? undefined : statusFilter }],
-    queryFn: () => getOrders({ page: 1, limit: 10, search: searchTerm, status: statusFilter === "all" ? undefined : statusFilter }),
+    queryKey: ["orders", { page: currentPage, limit, search: searchTerm, status: statusFilter === "all" ? undefined : statusFilter }],
+    queryFn: () => getOrders({ page: currentPage, limit, search: searchTerm, status: statusFilter === "all" ? undefined : statusFilter }),
   });
 
   const orders = data?.orders || [];
+  const totalPages = data?.totalPages || 1;
 
   const handleViewDetails = (order: Order) => {
     navigate(`/orders/${order.id}`);
@@ -183,19 +186,19 @@ const Orders = () => {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => alert("Pagination: Previous Page")}
-                disabled={data.page <= 1 || isLoading}
+                onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+                disabled={currentPage <= 1 || isLoading}
               >
                 Previous
               </Button>
               <span className="text-sm text-muted-foreground">
-                Page {data.page} of {data.totalPages}
+                Page {currentPage} of {totalPages}
               </span>
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => alert("Pagination: Next Page")}
-                disabled={data.page >= data.totalPages || isLoading}
+                onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+                disabled={currentPage >= totalPages || isLoading}
               >
                 Next
               </Button>

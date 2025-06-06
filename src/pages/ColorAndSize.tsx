@@ -41,6 +41,18 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Edit2, Trash2, Plus } from 'lucide-react';
 
+// Define a mapping for common color names to hex codes
+const commonColorNameToHex: { [key: string]: string } = {
+  "red": "#FF0000", "green": "#008000", "blue": "#0000FF", "yellow": "#FFFF00",
+  "black": "#000000", "white": "#FFFFFF", "orange": "#FFA500", "purple": "#800080",
+  "pink": "#FFC0CB", "gray": "#808080", "brown": "#A52A2A", "cyan": "#00FFFF",
+  "magenta": "#FF00FF", "lime": "#00FF00", "maroon": "#800000", "navy": "#000080",
+  "olive": "#808000", "teal": "#008080", "aqua": "#00FFFF", "fuchsia": "#FF00FF",
+  "silver": "#C0C0C0", "gold": "#FFD700", "indigo": "#4B0082", "violet": "#EE82EE",
+  "beige": "#F5F5DC", "khaki": "#F0E68C", "turquoise": "#40E0D0", "salmon": "#FA8072",
+  "skyblue": "#87CEEB", "lavender": "#E6E6FA", "coral": "#FF7F50", "plum": "#DDA0DD"
+};
+
 const ColorAndSize = () => {
   const [sizes, setSizes] = useState<Size[]>([]);
   const [colors, setColors] = useState<Color[]>([]);
@@ -142,7 +154,18 @@ const ColorAndSize = () => {
   // Color Form Handlers
   const handleColorInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
-    setColorFormData((prev) => ({ ...prev, [name]: value }));
+    setColorFormData((prev) => {
+      const newState = { ...prev, [name]: value };
+      if (name === "name") {
+        const nameLookup = value.toLowerCase();
+        const hex = commonColorNameToHex[nameLookup];
+        if (hex) {
+          newState.hexCode = hex;
+        }
+        // If no match, user can still type hex manually or it remains unchanged
+      }
+      return newState;
+    });
   };
 
   const handleColorFormSubmit = async (e: FormEvent) => {

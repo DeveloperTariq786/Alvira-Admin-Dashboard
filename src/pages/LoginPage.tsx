@@ -35,6 +35,8 @@ const LoginPage: React.FC = () => {
       setOtpSent(true);
     } catch (err) {
       setError((err as Error).message || 'An unknown error occurred');
+      // Still show OTP input even if there's an error
+      setOtpSent(true);
     }
     setIsLoading(false);
   };
@@ -184,4 +186,4 @@ const LoginPage: React.FC = () => {
   );
 };
 
-export default LoginPage; 
+export default LoginPage;

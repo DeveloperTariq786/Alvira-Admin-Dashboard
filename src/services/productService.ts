@@ -31,6 +31,8 @@ export interface ProductSize { // Simplified, use full Size from colorAndSizeSer
   value: string;
 }
 
+export type StockStatus = "IN_STOCK" | "LOW_STOCK" | "OUT_OF_STOCK";
+
 export interface ProductBenefit {
   icon: string; // Assuming icon is a string identifier like 'clock', 'cash'
   text: string;
@@ -71,6 +73,9 @@ export interface Product {
   category: ProductCategory;
   colors: ProductColor[];
   sizes: ProductSize[];
+  stockQuantity: number;
+  lowStockThreshold: number;
+  stockStatus: StockStatus;
   _count?: { // Optional _count object
     reviews?: number;
   };
@@ -122,11 +127,17 @@ export interface CreateProductData {
   productInformation: ProductInformation;
   shippingPoints: string[];
   careInstructions: string[];
+  stockQuantity: number;
+  lowStockThreshold: number;
+  stockStatus: StockStatus;
 }
 
 // DTO for updating a product
 export type UpdateProductData = Partial<CreateProductData> & {
   rating?: number; // Rating can be updated
+  stockQuantity?: number;
+  lowStockThreshold?: number;
+  stockStatus?: StockStatus;
   // Ensure all fields from the user's request body are optional here
   // For example, if 'name' is in CreateProductData and can be updated, it's covered by Partial.
   // If there are fields in the update payload not in CreateProductData, add them here.
@@ -139,6 +150,7 @@ export type UpdateProductData = Partial<CreateProductData> & {
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
 const PRODUCTS_ENDPOINT = "/products";
 const REVIEWS_ENDPOINT = "/reviews/product"; // Define reviews endpoint
+const INVENTORY_ENDPOINT = "/inventory"; // Added inventory endpoint
 
 export const getProducts = async (page: number = 1, limit: number = 10): Promise<ProductsApiResponse> => {
   if (!API_BASE_URL) {
@@ -252,4 +264,104 @@ export const getProductReviews = async (productId: string): Promise<Review[]> =>
   
   const data = await response.json();
   return data;
+};
+
+export const updateStockQuantity = async (productId: string, quantity: number, reason?: string): Promise<void> => {
+  if (!API_BASE_URL) throw new Error("Base API URL is not defined");
+  const token = getToken();
+  if (!token) throw new Error("Authentication token not found");
+
+  const payload: { quantity: number; reason?: string } = { quantity };
+  if (reason) {
+    payload.reason = reason;
+  }
+
+  const response = await fetch(`${API_BASE_URL}${INVENTORY_ENDPOINT}/${productId}/stock`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ message: `HTTP error! status: ${response.status} - Failed to parse error response.` }));
+    throw new Error(errorData.message || `HTTP error! status: ${response.status}`);
+  }
+  // Assuming a 200/204 response for successful PUT
+};
+
+export const updateLowStockThreshold = async (productId: string, threshold: number): Promise<void> => {
+  if (!API_BASE_URL) throw new Error("Base API URL is not defined");
+  const token = getToken();
+  if (!token) throw new Error("Authentication token not found");
+
+  const response = await fetch(`${API_BASE_URL}${INVENTORY_ENDPOINT}/${productId}/threshold`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify({ threshold }),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ message: `HTTP error! status: ${response.status} - Failed to parse error response.` }));
+    throw new Error(errorData.message || `HTTP error! status: ${response.status}`);
+  }
+  // Assuming a 200/204 response for successful PUT
+}
+
+export const getLowStockProducts = async (page: number = 1, limit: number = 10): Promise<ProductsApiResponse> => {
+  if (!API_BASE_URL) throw new Error("Base API URL is not defined");
+  const token = getToken();
+  if (!token) throw new Error("Authentication token not found. Please log in.");
+
+  const API_URL = `${API_BASE_URL}${INVENTORY_ENDPOINT}/low-stock?page=${page}&limit=${limit}`;
+  const response = await fetch(API_URL, {
+    headers: {
+      'Authorization': `Bearer ${token}`,
+    },
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ message: `HTTP error! status: ${response.status}` }));
+    throw new Error(errorData.message || `HTTP error! status: ${response.status}`);
+  }
+  const rawData = await response.json();
+  // Specific mapping for the /low-stock endpoint structure
+  return {
+    products: rawData.products,    // Directly use rawData.products
+    page: rawData.page,           // 'page' is correct
+    limit: limit,                 // Add the request limit
+    totalPages: rawData.pages,    // Map 'pages' to 'totalPages'
+    totalItems: rawData.total     // Map 'total' to 'totalItems'
+  };
+};
+
+export const getOutOfStockProducts = async (page: number = 1, limit: number = 10): Promise<ProductsApiResponse> => {
+  if (!API_BASE_URL) throw new Error("Base API URL is not defined");
+  const token = getToken();
+  if (!token) throw new Error("Authentication token not found. Please log in.");
+
+  const API_URL = `${API_BASE_URL}${INVENTORY_ENDPOINT}/out-of-stock?page=${page}&limit=${limit}`;
+  const response = await fetch(API_URL, {
+    headers: {
+      'Authorization': `Bearer ${token}`,
+    },
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ message: `HTTP error! status: ${response.status}` }));
+    throw new Error(errorData.message || `HTTP error! status: ${response.status}`);
+  }
+  const rawData = await response.json();
+  return {
+    products: rawData.data,      // Map 'data' to 'products'
+    page: rawData.page,           // 'page' is correct
+    limit: limit,                 // Add the request limit
+    totalPages: rawData.pages,    // Map 'pages' to 'totalPages'
+    totalItems: rawData.total     // Map 'total' to 'totalItems'
+  };
 }; 
